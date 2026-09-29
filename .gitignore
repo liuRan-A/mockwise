@@ -1,0 +1,32 @@
+# === 敏感信息（绝不上传）===
+.env
+*.env
+backend/.env
+.env.*
+!.env.example
+
+# === Python ===
+__pycache__/
+*.py[cod]
+.venv/
+venv/
+venv*/
+backend/venv312/
+*.log
+
+# === 运行期产物（不上传）===
+backend/uploads/
+*.db
+*.sqlite
+
+# === 前端 ===
+node_modules/
+frontend/dist/
+# 若想让 clone 即看效果，删掉上面这行（保留 dist）
+
+# === 编辑器 / 系统 / OneDrive ===
+.idea/
+.vscode/
+desktop.ini
+Thumbs.db
+*~
