@@ -34,6 +34,7 @@ export const contentApi = {
   createQuestion: (setId, data) => http.post(`/admin/content/sets/${setId}/questions`, data),
   updateQuestion: (qid, data) => http.put(`/admin/content/questions/${qid}`, data),
   deleteQuestion: (qid) => http.delete(`/admin/content/questions/${qid}`),
+  aiRefAnswer: (qid) => http.post(`/admin/content/questions/${qid}/ai-ref-answer`),
   // 群面虚拟候选人人设
   personas: () => http.get('/admin/content/personas'),
   createPersona: (data) => http.post('/admin/content/personas', data),

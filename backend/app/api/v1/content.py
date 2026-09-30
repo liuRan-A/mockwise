@@ -5,6 +5,7 @@ from fastapi import APIRouter, Depends, HTTPException, status, Query
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
+from app.core.config import settings
 from app.core.rbac import (require_permission, record_audit, PERM_MANAGE_CONTENT,
                            PERM_APPROVE, ROLE_PERMS)
 from app.core.logging_config import get_logger
@@ -80,6 +81,22 @@ def _persona_out(p: PeerPersona) -> dict:
         "rebuttals": as_list(p.rebuttals),
         "summaries": as_list(p.summaries),
     }
+
+
+def _ref_answer_to_text(parsed: dict) -> str:
+    """把结构化参考答案拼成纯文本，写入 Question.ref_answer（兼容既有消费方：
+    P3 知识抽取按文本解析、前端按文本展示）。"""
+    lines: list[str] = []
+    for label, key in (("采分点", "key_points"), ("答题框架", "outline"), ("常见失分点", "common_traps")):
+        items = parsed.get(key) or []
+        if items:
+            lines.append(f"【{label}】")
+            lines.extend(f"- {x}" for x in items)
+    sample = (parsed.get("sample") or "").strip()
+    if sample:
+        lines.append("【示范作答】")
+        lines.append(sample)
+    return "\n".join(lines)
 
 
 # ============ 套题 ============
@@ -193,6 +210,32 @@ def delete_question(qid: int,
         raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
     record_audit(db, admin.id, "delete", "question", qid, "force 直执行" if force else None)
     return R.ok({"deleted": qid})
+
+
+@router.post("/questions/{qid}/ai-ref-answer", response_model=R,
+             summary="AI 生成参考答案（高危：进审批，复核后才写入题库）")
+def ai_generate_ref_answer(qid: int, admin: User = Depends(require_permission(PERM_MANAGE_CONTENT)), db: Session = Depends(get_db)):
+    """用大模型为本题目生成标准参考答案，但**不立即写入**——先冻结为待审单，
+    经人工复核批准后才落地题库（避免 AI 幻觉/错误参考答案污染所有用户的评分）。
+    审批系统全局关闭（APPROVAL_ENABLED=False）时退化为直接写入。"""
+    q = db.get(Question, qid)
+    if not q:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
+    from app.services.llm import generate_reference_answer
+    parsed = generate_reference_answer(
+        q.content or "", q.category or "", q.dimension or "", q.form_type or "structured",
+    )
+    engine = parsed.get("engine", "rule")
+    ref_text = _ref_answer_to_text(parsed)
+    summary = f"AI 生成参考答案（{engine}），待人工复核后写入题库"
+    if not settings.APPROVAL_ENABLED:
+        q_crud.update_question(db, qid, {"ref_answer": ref_text})
+        record_audit(db, admin.id, "ai_ref_answer", "question", qid, summary + "（审批关闭，直接写入）")
+        return R.ok({"need_approval": False, "engine": engine, "ref_answer": ref_text})
+    ap = appr.submit(db, target_type="question", target_id=qid, action="update",
+                     payload={"ref_answer": ref_text}, summary=summary, submitter_id=admin.id)
+    return R.ok({"need_approval": True, "approval_id": ap.id, "status": ap.status,
+                 "risk": ap.risk, "summary": summary, "engine": engine})
 
 
 # ============ 群面虚拟候选人人设 ============

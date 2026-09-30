@@ -548,7 +548,14 @@
           <a-col :span="12"><a-form-item label="考察维度"><a-input v-model:value="qForm.dimension" placeholder="如：专业深度" /></a-form-item></a-col>
         </a-row>
         <a-form-item label="题目内容"><a-textarea v-model:value="qForm.content" :rows="4" /></a-form-item>
-        <a-form-item label="参考答案"><a-textarea v-model:value="qForm.ref_answer" :rows="3" /></a-form-item>
+        <a-form-item>
+          <template #label>
+            <span>参考答案</span>
+            <a-button size="small" type="link" :loading="aiGenLoading" :disabled="!qForm.id"
+              style="float:right; padding-right:0" @click="aiGenRefAnswer">AI 生成（需复核）</a-button>
+          </template>
+          <a-textarea v-model:value="qForm.ref_answer" :rows="3" placeholder="可点右侧「AI 生成」由大模型起草，提交后进入人工复核，批准才生效" />
+        </a-form-item>
         <a-form-item label="答题时限（秒）"><a-input-number v-model:value="qForm.time_limit_s" :min="10" style="width:160px" /></a-form-item>
       </a-form>
     </a-modal>
@@ -1023,6 +1030,7 @@ async function delSet(row) {
 
 // —— 题目 ——
 const qModal = ref(false)
+const aiGenLoading = ref(false)
 const qForm = reactive({
   id: null, set_id: null, seq: 0, form_type: 'structured', difficulty: 'medium',
   category: '', dimension: '', content: '', ref_answer: '', time_limit_s: 120,
@@ -1054,6 +1062,24 @@ async function saveQuestion() {
     qModal.value = false
     await loadQuestions()
   } catch (e) { message.error('保存失败') } finally { saving.value = false }
+}
+
+// AI 生成参考答案：大模型起草后进入人工复核，批准才写入题库
+async function aiGenRefAnswer() {
+  if (!qForm.id) { message.warning('请先保存题目再生成参考答案'); return }
+  aiGenLoading.value = true
+  try {
+    const r = await contentApi.aiRefAnswer(qForm.id)
+    const d = r.data
+    if (d.need_approval) {
+      message.success(`已提交人工复核（审批单 #${d.approval_id}，${d.engine} 生成），批准后生效`)
+    } else {
+      qForm.ref_answer = d.ref_answer || qForm.ref_answer
+      message.success('AI 已生成参考答案并写入')
+    }
+  } catch (e) {
+    message.error((e?.response?.data?.msg) || 'AI 生成失败')
+  } finally { aiGenLoading.value = false }
 }
 async function delQuestion(row) {
   const r = await contentApi.deleteQuestion(row.id)

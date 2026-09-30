@@ -2,7 +2,8 @@
 import sys
 from datetime import datetime, timedelta
 from app.core.database import SessionLocal, engine, Base
-from app.models import user as um, position as pm, question as qm, session as sm, group as gm, report as rm  # noqa
+from app.models import (user as um, position as pm, question as qm, session as sm,
+                        group as gm, report as rm, audit, memory, approval, observability)  # noqa
 from app.core.security import hash_password
 
 
