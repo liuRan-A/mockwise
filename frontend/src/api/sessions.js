@@ -13,4 +13,6 @@ export const sessionApi = {
   peers: (sessionId) => http.get(`/sessions/${sessionId}/peers`),
   peerTalk: (sessionId, payload) =>
     http.post(`/sessions/${sessionId}/peer-talk`, payload),
+  groupRound: (sessionId, payload) =>
+    http.post(`/sessions/${sessionId}/round`, payload),
 }

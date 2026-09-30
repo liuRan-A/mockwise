@@ -195,3 +195,62 @@ def generate_group_turn(*, persona, stage: str, topic: str = "", stance: str = "
         target_name=target_name, user_text=user_text, other_name=other_name,
         candidate_brief=candidate_brief,
     )
+
+
+def _select_speakers(personas: list, stage: str, n: int) -> list:
+    """挑选本轮发言的虚拟候选人：按抢话倾向降序取前 n 位（自由讨论优先活跃者）。"""
+    ranked = sorted(personas, key=lambda p: -(getattr(p, "aggressiveness", 0) or 0))
+    return ranked[: max(1, n)]
+
+
+def generate_round(*, personas, stage: str, topic: str = "", user_text: str = "",
+                   recent_context: Optional[list[dict]] = None, member_names=None,
+                   candidate_brief: str = "", n_speakers: int = 2) -> list[dict]:
+    """生成「一轮」连贯的 AI 候选人交锋（后端接管编排，直接修复「各说各话」）。
+
+    核心：每位发言者生成后，立刻把他的真实发言写回运行上下文，下一位据此回应上一位
+    的**实际观点**（而非只回应用户），从而天然形成「你来我往」的对话链。首位默认回应
+    真人（若有发言）或立论；后续发言者默认回应上一位 AI —— 把 AI 互怼概率从前端随机
+    的 ~22% 提升到结构性的 100%。
+
+    返回有序列表（前端按序流式播放即可）：
+        [{"persona_id","name","style","color","text","intent","cites","respond_to","engine"}]
+    """
+    personas = list(personas or [])
+    if not personas:
+        return []
+    names = [getattr(p, "name", "") for p in personas if getattr(p, "name", "")]
+    member_names = list(dict.fromkeys((list(member_names or [])) + names + ["你"]))
+    n = max(1, min(n_speakers or 2, len(personas)))
+    ordered = _select_speakers(personas, stage, n)
+    orch = GroupOrchestrator(member_names=member_names, topic=topic)
+    running = [dict(m) for m in (recent_context or [])]  # 运行上下文，逐轮累积真实发言
+    turns: list[dict] = []
+    for i, persona in enumerate(ordered):
+        if i == 0:
+            respond_to = "me"  # 首位：回应真人（若有发言）或直接立论
+        else:
+            respond_to = turns[-1]["name"]  # 后续：回应上一位 AI —— 形成真正交锋
+        target_name = "你" if respond_to == "me" else respond_to
+        turn = orch.generate_turn(
+            PeerAgent(persona, member_names),
+            phase=stage, topic=topic, stance="",
+            recent_context=running, respond_to=respond_to,
+            target_name=target_name,
+            user_text=(user_text if i == 0 else ""),
+            candidate_brief=(candidate_brief if i == 0 else ""),
+        )
+        name = getattr(persona, "name", "候选人")
+        color = getattr(persona, "color", "#3E63DD")
+        style = getattr(persona, "style", "")
+        running.append({"who": "peer", "name": name, "text": turn.get("content") or ""})
+        turns.append({
+            "persona_id": getattr(persona, "id", None),
+            "name": name, "style": style, "color": color,
+            "text": turn.get("content") or "",
+            "intent": turn.get("intent") or stage,
+            "cites": turn.get("cites") or [],
+            "respond_to": respond_to,
+            "engine": turn.get("engine"),
+        })
+    return turns

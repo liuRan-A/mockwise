@@ -56,3 +56,12 @@ class RaiseHandIn(BaseModel):
     transcript: str = ""
     audio_url: str = ""
     duration_ms: int = 0
+
+
+class PeerRoundIn(BaseModel):
+    """请求「一轮 AI 候选人交锋」：后端链式生成 2-3 位候选人的连贯发言。"""
+    stage: str = "debate"            # opening / debate / summary
+    topic: str = ""
+    user_text: str = ""              # 真人候选人刚说的原话（首位 AI 据此回应）
+    recent_context: list = []        # 先前对话：[{who:"me"|"peer","name":str,"text":str}]
+    n_speakers: int = 0              # 0 = 自动（默认 2）

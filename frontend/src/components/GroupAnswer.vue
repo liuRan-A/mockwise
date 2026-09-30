@@ -299,7 +299,33 @@ function stopThinking() {
   if (thinkTimer) { clearInterval(thinkTimer); thinkTimer = null }
 }
 
-// —— AI 候选人发言 ——
+// —— 按后端返回的「一轮交锋」逐条流式播放 ——
+async function playPeerTurn(t) {
+  const peer = peers.value.find(p => p.id === t.persona_id)
+  const agg = peer ? (peer.aggressiveness || 3) : 3
+  startThinking(t.name)
+  try {
+    const thinkingMs = Math.min(2400, 900 + (t.text || '').length * 18 + agg * 80)
+    await new Promise(r => setTimeout(r, thinkingMs))
+    stopThinking()
+    const replyTo = t.respond_to === 'me' ? '你' : (t.respond_to || '')
+    pushMsg({
+      who: 'peer', name: t.name, style: t.style, color: t.color,
+      text: '', ts: fmt(totalSecs.value), replyTo, streaming: true,
+    })
+    const idx = messages.value.length - 1
+    const cps = agg >= 4 ? 22 : agg <= 2 ? 38 : 30
+    await streamMessage(idx, t.text, cps)
+  } catch (e) {
+    stopThinking()
+    pushMsg({
+      who: 'peer', name: t.name, style: t.style, color: t.color,
+      text: t.text || '（内容生成失败）', ts: fmt(totalSecs.value),
+    })
+  }
+}
+
+// —— AI 候选人发言（单条，保留用于开场/总结/降级）——
 async function peerTalk(persona, stageName, extra = {}) {
   startThinking(persona.name)
   try {
@@ -378,26 +404,27 @@ async function afterMySpeech(myText) {
     waitingPeer.value = false
     sys('你的陈述已收到。可以继续补充，或点击「进入自由讨论」。')
   } else if (stage.value === 1) {
-    // 自由讨论：候选人之间的「来回」很重要 —— 不只回应你，还要互相呼应
-    const responders = pool.slice(0, Math.random() < 0.45 ? 2 : 1)
-    for (let i = 0; i < responders.length; i++) {
-      // 第 2 位回应者有 50% 概率去回应第 1 位候选人（而不是用户），形成"你来我往"的对话感
-      const respondToOtherPeer = responders.length > 1 && i > 0 && Math.random() < 0.5
-      if (respondToOtherPeer) {
-        const prev = responders[i - 1]
-        await peerTalk(responders[i], 'debate', {
-          target_name: prev.name, user_text: '',  // 让后端从 context 里抽 prev 的发言
-          replyTo: prev.name, respond_to: prev.name, contextN: 8,
-        })
-      } else {
-        const other = responders.find(p => p !== responders[i])
-        await peerTalk(responders[i], 'debate', {
-          target_name: '你', user_text: myText,
-          other_name: other ? other.name : '',
-          replyTo: '你', respond_to: 'me', contextN: 8,
-        })
+    // 自由讨论：后端接管「一轮交锋」，AI 之间真正互怼（每位回应上一位真实观点）
+    waitingPeer.value = true
+    try {
+      const res = await sessionApi.groupRound(props.sessionId, {
+        stage: 'debate',
+        topic: topic.value,
+        user_text: myText,
+        recent_context: buildContext(8),
+      })
+      const turns = (res && res.turns) || []
+      for (const t of turns) {
+        await playPeerTurn(t)
+        await new Promise(r => setTimeout(r, 350))
       }
-      await new Promise(r => setTimeout(r, 350))
+    } catch (e) {
+      // 接口异常时降级：至少让最活跃的候选人回应你
+      const p = [...peers.value].sort((a, b) => b.aggressiveness - a.aggressiveness)[0]
+      await peerTalk(p, 'debate', {
+        target_name: '你', user_text: myText,
+        replyTo: '你', respond_to: 'me', contextN: 8,
+      })
     }
     waitingPeer.value = false
     sys('请继续发言，或点击「进入总结陈词」。')
