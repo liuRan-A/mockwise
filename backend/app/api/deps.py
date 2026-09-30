@@ -4,6 +4,7 @@ from fastapi.security import HTTPBearer, HTTPAuthorizationCredentials
 from sqlalchemy.orm import Session
 from app.core.database import get_db
 from app.core.security import decode_token
+from app.core.logging_config import user_id_var
 from app.models.user import User
 
 bearer_scheme = HTTPBearer(auto_error=False)
@@ -23,6 +24,8 @@ def get_current_user(
         raise HTTPException(status.HTTP_401_UNAUTHORIZED, "用户不存在")
     if user.status != "active":
         raise HTTPException(status.HTTP_403_FORBIDDEN, "账号已被禁用")
+    # 注入 uid 到日志上下文，便于全链路追踪
+    user_id_var.set(str(user.id))
     return user
 
 

@@ -64,38 +64,18 @@ _FEEDBACK_SYS = """你是一名面试教练，正在听候选人作答。请严�
 
 
 def _chat_json(system_prompt: str, user_prompt: str, timeout: Optional[int] = None) -> Optional[dict]:
-    """调用 DeepSeek chat 接口并解析 JSON。任何失败返回 None。"""
-    api_key = (settings.DEEPSEEK_API_KEY or "").strip()
-    if not api_key:
-        logger.info("[llm] DEEPSEEK_API_KEY 未配置，跳过模型调用")
-        return None
+    """调用 DeepSeek chat 接口并解析 JSON。任何失败返回 None（降级）。
 
-    url = settings.DEEPSEEK_BASE_URL.rstrip("/") + "/chat/completions"
-    headers = {
-        "Authorization": f"Bearer {api_key}",
-        "Content-Type": "application/json",
-    }
-    payload = {
-        "model": settings.DEEPSEEK_MODEL,
-        "messages": [
-            {"role": "system", "content": system_prompt},
-            {"role": "user", "content": user_prompt},
-        ],
-        "temperature": 0.3,
-        "response_format": {"type": "json_object"},
-        "max_tokens": 1200,
-    }
-    try:
-        with httpx.Client(timeout=timeout or settings.LLM_TIMEOUT_S) as client:
-            resp = client.post(url, headers=headers, json=payload)
-        if resp.status_code != 200:
-            logger.warning("[llm] DeepSeek 返回 %s: %s", resp.status_code, resp.text[:200])
-            return None
-        content = resp.json()["choices"][0]["message"]["content"]
-        return _safe_json(content)
-    except Exception as e:  # 超时 / 连接 / 限流 / 解析 —— 全部降级
-        logger.warning("[llm] DeepSeek 调用失败，降级规则评分: %s", e)
-        return None
+    实现已委托给加固客户端 services.llm_client.chat_json，获得：
+    - 网络层重试 + 退避（超时/限流/5xx）；
+    - LLM 调用 token 用量埋点（供 Phase 4 可观测性消费）；
+    失败语义与原实现一致：返回 None 触发调用方的规则评分兜底。
+    """
+    from app.services.llm_client import chat_json
+    return chat_json(
+        system_prompt, user_prompt,
+        timeout=timeout, temperature=0.3, max_tokens=1200, json_mode=True,
+    )
 
 
 def _safe_json(content: str) -> Optional[dict]:
@@ -169,6 +149,8 @@ def score_answer(
     category: str,
     transcript: str,
     form_type: str = "structured",
+    user_memory: str | None = None,
+    knowledge: str | None = None,
 ) -> Optional[dict]:
     """
     大模型评分。返回：
@@ -180,23 +162,49 @@ def score_answer(
       "highlights": [str],
       "suggestions": [str],
       "followup": str,
-      "engine": "deepseek"
+      "engine": "deepseek",
+      "ctx_meta": {...}   # 上下文工程元数据（供 P4 可观测性消费）
     }
     失败返回 None。
+
+    上下文工程：用 ContextBuilder 分层装配——
+      TASK(9)   题目+作答（必保）
+      KNOWLEDGE(7) 本题参考答案要点（仅本题，按需）
+      USER_MEMORY(6) 候选人在该维度的长期记忆（按需）
+    在 token 预算内优先保留高优先级片段，超出则裁剪低优先级。
     """
     if not transcript or len(transcript.strip()) < 8:
         return None
 
     form_label = {"structured": "结构化面试", "group": "无领导小组讨论", "semi": "半结构化面试"}.get(form_type, "结构化面试")
-    user_prompt = (
+
+    from app.services.context import ContextBuilder, ContextLayer
+    builder = ContextBuilder(max_tokens=3200, system_prompt=_SCORE_SYS)
+    builder.add(
         f"【面试形式】{form_label}\n"
         f"【题目类别】{category or '通用'}\n"
         f"【考察维度】{dimension or '综合'}\n"
         f"【面试题目】{question_content or '（见候选人作答）'}\n"
-        f"【候选人作答原文】\n{transcript[:2500]}\n"
-        f"请以评委身份评分并输出 JSON。"
+        f"【候选人作答原文】\n{transcript[:2200]}\n"
+        f"请以评委身份评分并输出 JSON。",
+        ContextLayer.TASK, priority=9, key="task",
     )
-    data = _chat_json(_SCORE_SYS, user_prompt)
+    if knowledge:
+        builder.add(
+            "【评分参考（仅本题，供把握给分尺度）】\n" + knowledge,
+            ContextLayer.KNOWLEDGE, priority=7, key="knowledge",
+        )
+    if user_memory:
+        builder.add(
+            "【候选人长期记忆（按需召回，仅作参考）】\n" + user_memory,
+            ContextLayer.USER_MEMORY, priority=6, key="memory",
+        )
+    ctx = builder.assemble()
+    # 可观测性：标记场景并把上下文元数据挂到本次调用（落库后可用于统计上下文命中率/超预算率）
+    from app.services.tracing import scene, attach_ctx_meta
+    with scene("score_answer"):
+        attach_ctx_meta(ctx["meta"])
+        data = _chat_json(ctx["system"], ctx["user"])
     if not data:
         return None
 
@@ -221,6 +229,7 @@ def score_answer(
         "suggestions": _norm_str_list(data.get("suggestions"), limit=3, max_len=40),
         "followup": str(data.get("followup") or "").strip()[:60],
         "engine": "deepseek",
+        "ctx_meta": ctx["meta"],
     }
 
 
@@ -228,17 +237,44 @@ def analyze_answer(
     transcript: str,
     dimension: str = "",
     question_content: str = "",
+    user_memory: str | None = None,
+    knowledge: str | None = None,
 ) -> Optional[dict]:
-    """大模型实时反馈（理解/亮点/建议/追问）。失败返回 None。"""
+    """大模型实时反馈（理解/亮点/建议/追问）。失败返回 None。
+
+    上下文工程：与 score_answer 同一套 ContextBuilder 分层装配，但预算更小
+    （实时反馈走快路径，宁可少给上下文也要低延迟）：
+      TASK(9)       题目 + 作答（必保，作答截断更短以控延迟）
+      KNOWLEDGE(7)  本题参考答案要点（可选，预算内才注入）
+      USER_MEMORY(6) 候选人在该维度的长期记忆（可选）
+    """
     if not transcript or len(transcript.strip()) < 8:
         return None
-    user_prompt = (
+
+    from app.services.context import ContextBuilder, ContextLayer
+    builder = ContextBuilder(max_tokens=1600, system_prompt=_FEEDBACK_SYS)
+    builder.add(
         f"【考察维度】{dimension or '综合'}\n"
         f"【面试题目】{question_content or '（通用面试题）'}\n"
-        f"【候选人作答】\n{transcript[:2000]}\n"
-        f"请输出反馈 JSON。"
+        f"【候选人作答】\n{transcript[:1800]}\n"
+        f"请输出反馈 JSON。",
+        ContextLayer.TASK, priority=9, key="task",
     )
-    data = _chat_json(_FEEDBACK_SYS, user_prompt, timeout=30)
+    if knowledge:
+        builder.add(
+            "【本题参考要点（供判断亮点/建议，勿直接复述）】\n" + knowledge,
+            ContextLayer.KNOWLEDGE, priority=7, key="knowledge",
+        )
+    if user_memory:
+        builder.add(
+            "【候选人长期记忆（按需召回）】\n" + user_memory,
+            ContextLayer.USER_MEMORY, priority=6, key="memory",
+        )
+    ctx = builder.assemble()
+    from app.services.tracing import scene, attach_ctx_meta
+    with scene("analyze_answer"):
+        attach_ctx_meta(ctx["meta"])
+        data = _chat_json(ctx["system"], ctx["user"], timeout=30)
     if not data:
         return None
     return {
@@ -248,6 +284,7 @@ def analyze_answer(
         "followup": str(data.get("followup") or "").strip()[:60],
         "dim_scores": _norm_dim_scores(data.get("dim_scores")),
         "engine": "deepseek",
+        "ctx_meta": ctx["meta"],
     }
 
 
@@ -273,7 +310,9 @@ def analyze_resume(resume_text: str) -> Optional[dict]:
     """大模型分析简历生成画像。失败返回 None（调用方做规则兜底）。"""
     if not resume_text or len(resume_text.strip()) < 20:
         return None
-    data = _chat_json(_RESUME_SYS, f"【候选人简历】\n{resume_text[:4000]}\n请输出画像 JSON。", timeout=45)
+    from app.services.tracing import scene
+    with scene("resume"):
+        data = _chat_json(_RESUME_SYS, f"【候选人简历】\n{resume_text[:4000]}\n请输出画像 JSON。", timeout=45)
     if not data:
         return None
     return {
@@ -469,7 +508,9 @@ def generate_reference_answer(
             f"请输出参考答案 JSON。"
         )
         try:
-            parsed = _norm_ref_answer(_chat_json(_REF_ANSWER_SYS, user_prompt, timeout=45))
+            from app.services.tracing import scene
+            with scene("ref_answer"):
+                parsed = _norm_ref_answer(_chat_json(_REF_ANSWER_SYS, user_prompt, timeout=45))
             if parsed:
                 return parsed
         except Exception as e:

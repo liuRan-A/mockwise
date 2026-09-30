@@ -7,6 +7,40 @@ from sqlalchemy.orm import Session
 from app.models.question import PeerPersona
 
 
+# ===== 后台：人设 CRUD =====
+def list_personas(db: Session):
+    return db.query(PeerPersona).order_by(PeerPersona.set_id.is_(None).desc(), PeerPersona.id).all()
+
+
+def create_persona(db: Session, data: dict) -> PeerPersona:
+    p = PeerPersona(**data)
+    db.add(p)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+def update_persona(db: Session, pid: int, data: dict) -> PeerPersona | None:
+    p = db.get(PeerPersona, pid)
+    if not p:
+        return None
+    for k, v in data.items():
+        if v is not None:
+            setattr(p, k, v)
+    db.commit()
+    db.refresh(p)
+    return p
+
+
+def delete_persona(db: Session, pid: int) -> bool:
+    p = db.get(PeerPersona, pid)
+    if not p:
+        return False
+    db.delete(p)
+    db.commit()
+    return True
+
+
 def list_personas_for_session(db: Session, set_id: int | None, limit: int = 5):
     """优先取该套题专属人设，不足则用通用人设补齐"""
     dedicated = db.query(PeerPersona).filter(PeerPersona.set_id == set_id).all() if set_id else []

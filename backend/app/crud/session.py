@@ -166,9 +166,22 @@ def submit_answer(db: Session, sq: SessionQuestion, transcript: str, audio_url: 
     ai = None
     try:
         from app.services.llm import score_answer
-        ai = score_answer(q_content, q_dim, q_cat, transcript, form_type=form_type)
-    except Exception:
-        ai = None
+        from app.crud.memory import retrieve_relevant
+        from app.services.knowledge import get_question_knowledge
+        # 上下文工程：按需召回「与本题维度/类别相关」的用户记忆 + 仅本题知识片段
+        uid = sq.session.user_id if sq.session else 0
+        mem = retrieve_relevant(db, uid, dimension=q_dim, category=q_cat) if uid else None
+        know = get_question_knowledge(ref_detail=sq.ref_detail, ref_answer=sq.ref_answer)
+        ai = score_answer(q_content, q_dim, q_cat, transcript, form_type=form_type,
+                          user_memory=mem, knowledge=know)
+    except Exception as e:  # noqa: BLE001
+        logger = __import__("logging").getLogger(__name__)
+        logger.warning("[session] 评分上下文装配失败，回退纯评分: %s", e)
+        try:
+            from app.services.llm import score_answer
+            ai = score_answer(q_content, q_dim, q_cat, transcript, form_type=form_type)
+        except Exception:
+            ai = None
 
     hit = _hit_keywords(transcript)
     if ai:
@@ -600,6 +613,14 @@ def finish_session(db: Session, sess: InterviewSession):
     db.add(rep)
     db.flush()
 
+    # —— 上下文工程：把本场维度得分累积进候选人长期记忆（供后续场次按需召回） ——
+    try:
+        from app.crud.memory import update_from_session
+        update_from_session(db, sess.user_id, dimensions, sess.form_type)
+    except Exception as e:  # noqa: BLE001
+        logger = __import__("logging").getLogger(__name__)
+        logger.warning("[session] 写回候选人记忆失败（不影响报告）: %s", e)
+
     # 报告高光 — 优先聚合每题大模型/规则已入库的 SessionHighlight，不足再从转写提取
     hl_count = 0
     t_cursor = 0
@@ -710,13 +731,18 @@ def finish_session(db: Session, sess: InterviewSession):
     return rep
 
 
-def analyze_transcript(transcript: str, dimension: str = "", question_content: str = "") -> dict:
+def analyze_transcript(transcript: str, dimension: str = "", question_content: str = "",
+                       user_memory: str | None = None, knowledge: str | None = None) -> dict:
     """AI 理解候选人的回答，返回：理解摘要 + 亮点 + 建议 + 追问。
-    DeepSeek 大模型优先；未配置/超时/异常时降级规则分析，保证实时反馈不中断。"""
+    DeepSeek 大模型优先；未配置/超时/异常时降级规则分析，保证实时反馈不中断。
+
+    user_memory / knowledge 为上下文工程按需注入项（可为空，为空则只给任务上下文）。
+    """
     if transcript and len(transcript.strip()) >= 8:
         try:
             from app.services.llm import analyze_answer
-            ai = analyze_answer(transcript, dimension, question_content)
+            ai = analyze_answer(transcript, dimension, question_content,
+                                user_memory=user_memory, knowledge=knowledge)
             if ai:
                 return {
                     "understanding": ai["understanding"],
@@ -725,6 +751,7 @@ def analyze_transcript(transcript: str, dimension: str = "", question_content: s
                     "followup": ai["followup"] or "能否再展开说说具体的数据指标或案例？",
                     "dim_scores": ai["dim_scores"],
                     "engine": "deepseek",
+                    "ctx_meta": ai.get("ctx_meta"),
                 }
         except Exception:
             pass

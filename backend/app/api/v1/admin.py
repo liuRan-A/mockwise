@@ -2,12 +2,15 @@
 """管理员后台路由：平台统计 / 用户管理 / 全部场次 / 简历浏览 / 面试回放"""
 from datetime import datetime, timedelta
 
-from fastapi import APIRouter, Depends, HTTPException, Query, status
-from sqlalchemy import func
+from fastapi import APIRouter, Depends, HTTPException, Query, status, Response
+from sqlalchemy import func, or_
+import csv
+import io
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
 from app.api.deps import get_admin_user
+from app.core.rbac import record_audit
 from app.models.user import User, PracticeHistory
 from app.models.position import Resume
 from app.models.session import InterviewSession, SessionQuestion, SessionScore
@@ -117,17 +120,32 @@ def set_user_status(user_id: int, status: str, admin: User = Depends(get_admin_u
         raise HTTPException(st.HTTP_400_BAD_REQUEST, "状态非法")
     u.status = status
     db.commit()
+    record_audit(db, admin.id, "update_status", "user", user_id, f"status={status}")
     return R.ok({"id": u.id, "status": u.status})
 
 
-@router.get("/sessions", response_model=R, summary="全部面试场次")
+@router.get("/sessions", response_model=R, summary="全部面试场次（支持关键词/时间筛选）")
 def list_sessions(
+    keyword: str = "",
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
     admin: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
     q = db.query(InterviewSession)
+    if keyword:
+        kw = f"%{keyword}%"
+        uids = [r[0] for r in db.query(User.id).filter(
+            (User.nickname.like(kw)) | (User.phone.like(kw)))]
+        sids = [r[0] for r in db.query(QuestionSet.id).filter(QuestionSet.name.like(kw))]
+        q = q.filter(or_(InterviewSession.user_id.in_(uids or [-1]),
+                        InterviewSession.set_id.in_(sids or [-1])))
+    if start:
+        q = q.filter(InterviewSession.started_at >= start)
+    if end:
+        q = q.filter(InterviewSession.started_at < end + timedelta(days=1))
     total = q.count()
     rows = q.order_by(InterviewSession.created_at.desc()).offset(
         (page - 1) * page_size
@@ -154,14 +172,26 @@ def list_sessions(
     return R.ok({"list": out, "total": int(total), "page": page, "page_size": page_size})
 
 
-@router.get("/resumes", response_model=R, summary="全部简历")
+@router.get("/resumes", response_model=R, summary="全部简历（支持关键词/时间筛选）")
 def list_resumes(
+    keyword: str = "",
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
     page: int = Query(1, ge=1),
     page_size: int = Query(10, ge=1, le=50),
     admin: User = Depends(get_admin_user),
     db: Session = Depends(get_db),
 ):
     q = db.query(Resume)
+    if keyword:
+        kw = f"%{keyword}%"
+        uids = [r[0] for r in db.query(User.id).filter(
+            (User.nickname.like(kw)) | (User.phone.like(kw)))]
+        q = q.filter(or_(Resume.user_id.in_(uids or [-1]), Resume.filename.like(kw)))
+    if start:
+        q = q.filter(Resume.created_at >= start)
+    if end:
+        q = q.filter(Resume.created_at < end + timedelta(days=1))
     total = q.count()
     rows = q.order_by(Resume.created_at.desc()).offset(
         (page - 1) * page_size
@@ -313,3 +343,234 @@ def admin_records(
                 continue
         out.append(rec)
     return R.ok({"list": out, "total": int(total), "page": page, "page_size": page_size})
+
+
+# —— 通用：构造单条回放记录行 ——
+def _record_row(s, db):
+    u = db.get(User, s.user_id)
+    qs = db.get(QuestionSet, s.set_id) if s.set_id else None
+    sqs = db.query(SessionQuestion).filter(SessionQuestion.session_id == s.id).all()
+    answered = [sq for sq in sqs if sq.status == "done" and sq.transcript]
+    has_audio = any((sq.audio_url or "") for sq in answered)
+    duration_ms = sum((sq.duration_ms or 0) for sq in answered)
+    text_chars = sum(len(sq.transcript or "") for sq in answered)
+    return {
+        "id": s.id,
+        "user_name": u.nickname if u else f"用户{s.user_id}",
+        "user_phone": u.phone if u else "",
+        "form_label": {"structured": "结构化", "group": "群面", "semi": "半结构化"}.get(s.form_type, s.form_type),
+        "set_name": qs.name if qs else ("简历专场" if s.set_id is None else "—"),
+        "status": s.status,
+        "total_score": float(s.total_score or 0),
+        "question_count": len(sqs),
+        "answered_count": len(answered),
+        "duration": f"{int(duration_ms // 60000)}:{int((duration_ms % 60000) // 1000):02d}",
+        "text_chars": text_chars,
+        "has_audio": has_audio,
+        "started_at": s.started_at.strftime("%Y-%m-%d %H:%M") if s.started_at else "",
+        "ended_at": s.ended_at.strftime("%Y-%m-%d %H:%M") if s.ended_at else "",
+    }
+
+
+def _to_csv(rows, headers, filename):
+    buf = io.StringIO()
+    w = csv.writer(buf)
+    w.writerow([h for _, h in headers])
+    for row in rows:
+        w.writerow([row.get(k, "") for k, _ in headers])
+    data = buf.getvalue().encode("utf-8-sig")
+    return Response(
+        content=data,
+        media_type="text/csv; charset=utf-8",
+        headers={"Content-Disposition": f"attachment; filename={filename}"},
+    )
+
+
+# —— 用户详情（管理员视角） ——
+@router.get("/users/{user_id}", response_model=R, summary="用户详情（含练习/简历/场次）")
+def user_detail(user_id: int, admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    u = db.get(User, user_id)
+    if not u:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "用户不存在")
+    practices = [
+        {"set_name": p.set_name, "total_score": float(p.total_score),
+         "practiced_at": p.practiced_at.strftime("%Y-%m-%d %H:%M")}
+        for p in db.query(PracticeHistory).filter(PracticeHistory.user_id == user_id)
+        .order_by(PracticeHistory.practiced_at.desc()).limit(50)
+    ]
+    resumes = [
+        {"id": r.id, "filename": r.filename,
+         "engine": (r.parsed_json or {}).get("engine", "rule"),
+         "candidate_name": (r.parsed_json or {}).get("candidate_name", ""),
+         "created_at": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else ""}
+        for r in db.query(Resume).filter(Resume.user_id == user_id).order_by(Resume.created_at.desc())
+    ]
+    sessions = [
+        {"id": s.id,
+         "form_label": {"structured": "结构化", "group": "群面", "semi": "半结构化"}.get(s.form_type, s.form_type),
+         "set_name": (db.get(QuestionSet, s.set_id).name if s.set_id and db.get(QuestionSet, s.set_id) else ("简历专场" if s.set_id is None else "—")),
+         "status": s.status, "total_score": float(s.total_score or 0),
+         "started_at": s.started_at.strftime("%Y-%m-%d %H:%M") if s.started_at else ""}
+        for s in db.query(InterviewSession).filter(InterviewSession.user_id == user_id)
+        .order_by(InterviewSession.started_at.desc()).limit(50)
+    ]
+    agg = db.query(func.count(PracticeHistory.id), func.avg(PracticeHistory.total_score)).filter(
+        PracticeHistory.user_id == user_id).one()
+    return R.ok({
+        "user": {
+            "id": u.id, "phone": u.phone, "nickname": u.nickname,
+            "target_position": u.target_position, "role": u.role, "status": u.status,
+            "created_at": u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else "",
+            "last_login_at": u.last_login_at.strftime("%Y-%m-%d %H:%M") if u.last_login_at else "",
+            "practice_count": int(agg[0] or 0),
+            "avg_score": round(float(agg[1]), 1) if agg[1] else 0,
+            "resume_count": db.query(func.count(Resume.id)).filter(Resume.user_id == user_id).scalar() or 0,
+        },
+        "practices": practices,
+        "resumes": resumes,
+        "sessions": sessions,
+    })
+
+
+# —— 简历详情（解析全文） ——
+@router.get("/resumes/{resume_id}", response_model=R, summary="简历详情（解析全文）")
+def resume_detail(resume_id: int, admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    r = db.get(Resume, resume_id)
+    if not r:
+        raise HTTPException(status.HTTP_404_NOT_FOUND, "简历不存在")
+    u = db.get(User, r.user_id)
+    p = r.parsed_json or {}
+    return R.ok({
+        "id": r.id, "user_id": r.user_id,
+        "user_name": u.nickname if u else f"用户{r.user_id}",
+        "filename": r.filename, "file_type": r.file_type, "status": r.status,
+        "engine": p.get("engine", "rule"),
+        "candidate_name": p.get("candidate_name", ""),
+        "target_position": p.get("target_position", ""),
+        "skills": p.get("skills", []),
+        "parsed": p,
+        "created_at": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "",
+    })
+
+
+# —— CSV 导出 ——
+@router.get("/users/export", summary="导出用户 CSV（utf-8）")
+def export_users(admin: User = Depends(get_admin_user), db: Session = Depends(get_db)):
+    rows = []
+    for u in db.query(User).order_by(User.created_at.desc()).all():
+        agg = db.query(func.count(PracticeHistory.id), func.avg(PracticeHistory.total_score)).filter(
+            PracticeHistory.user_id == u.id).one()
+        rc = db.query(func.count(Resume.id)).filter(Resume.user_id == u.id).scalar() or 0
+        rows.append({
+            "id": u.id, "phone": u.phone, "nickname": u.nickname,
+            "target_position": u.target_position, "role": u.role, "status": u.status,
+            "practice_count": int(agg[0] or 0),
+            "avg_score": round(float(agg[1]), 1) if agg[1] else 0,
+            "resume_count": int(rc),
+            "created_at": u.created_at.strftime("%Y-%m-%d %H:%M") if u.created_at else "",
+            "last_login_at": u.last_login_at.strftime("%Y-%m-%d %H:%M") if u.last_login_at else "",
+        })
+    headers = [("id", "ID"), ("phone", "手机号"), ("nickname", "昵称"), ("target_position", "目标岗位"),
+               ("role", "角色"), ("status", "状态"), ("practice_count", "练习次数"),
+               ("avg_score", "平均分"), ("resume_count", "简历数"),
+               ("created_at", "注册时间"), ("last_login_at", "最近登录")]
+    return _to_csv(rows, headers, "mockwise_users.csv")
+
+
+@router.get("/resumes/export", summary="导出简历 CSV（utf-8）")
+def export_resumes(
+    keyword: str = "",
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(Resume)
+    if keyword:
+        kw = f"%{keyword}%"
+        uids = [r[0] for r in db.query(User.id).filter(
+            (User.nickname.like(kw)) | (User.phone.like(kw)))]
+        q = q.filter(or_(Resume.user_id.in_(uids or [-1]), Resume.filename.like(kw)))
+    if start:
+        q = q.filter(Resume.created_at >= start)
+    if end:
+        q = q.filter(Resume.created_at < end + timedelta(days=1))
+    rows = []
+    for r in q.order_by(Resume.created_at.desc()).all():
+        u = db.get(User, r.user_id)
+        p = r.parsed_json or {}
+        rows.append({
+            "id": r.id,
+            "user_name": u.nickname if u else f"用户{r.user_id}",
+            "user_phone": u.phone if u else "",
+            "filename": r.filename,
+            "file_type": r.file_type,
+            "engine": p.get("engine", "rule"),
+            "candidate_name": p.get("candidate_name", ""),
+            "target_position": p.get("target_position", ""),
+            "skills": "、".join(p.get("skills", []) or []),
+            "created_at": r.created_at.strftime("%Y-%m-%d %H:%M") if r.created_at else "",
+        })
+    headers = [("id", "ID"), ("user_name", "用户"), ("user_phone", "手机号"), ("filename", "文件"),
+               ("file_type", "类型"), ("engine", "引擎"), ("candidate_name", "候选人"),
+               ("target_position", "目标岗位"), ("skills", "技能"), ("created_at", "上传时间")]
+    return _to_csv(rows, headers, "mockwise_resumes.csv")
+
+
+@router.get("/sessions/export", summary="导出面试场次 CSV（utf-8）")
+def export_sessions(
+    keyword: str = "",
+    start: datetime | None = Query(None),
+    end: datetime | None = Query(None),
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(InterviewSession)
+    if keyword:
+        kw = f"%{keyword}%"
+        uids = [r[0] for r in db.query(User.id).filter((User.nickname.like(kw)) | (User.phone.like(kw)))]
+        sids = [r[0] for r in db.query(QuestionSet.id).filter(QuestionSet.name.like(kw))]
+        q = q.filter(or_(InterviewSession.user_id.in_(uids or [-1]), InterviewSession.set_id.in_(sids or [-1])))
+    if start:
+        q = q.filter(InterviewSession.started_at >= start)
+    if end:
+        q = q.filter(InterviewSession.started_at < end + timedelta(days=1))
+    rows = []
+    for s in q.order_by(InterviewSession.started_at.desc()).all():
+        u = db.get(User, s.user_id)
+        qs = db.get(QuestionSet, s.set_id) if s.set_id else None
+        rows.append({
+            "id": s.id,
+            "user_name": u.nickname if u else f"用户{s.user_id}",
+            "form_label": {"structured": "结构化", "group": "群面", "semi": "半结构化"}.get(s.form_type, s.form_type),
+            "set_name": qs.name if qs else ("简历专场" if s.set_id is None else "—"),
+            "status": s.status,
+            "total_score": float(s.total_score or 0),
+            "started_at": s.started_at.strftime("%Y-%m-%d %H:%M") if s.started_at else "",
+            "ended_at": s.ended_at.strftime("%Y-%m-%d %H:%M") if s.ended_at else "",
+        })
+    headers = [("id", "场次ID"), ("user_name", "用户"), ("form_label", "形式"), ("set_name", "套题"),
+               ("status", "状态"), ("total_score", "总分"), ("started_at", "开始时间"), ("ended_at", "结束时间")]
+    return _to_csv(rows, headers, "mockwise_sessions.csv")
+
+
+@router.get("/records/export", summary="导出面试回放 CSV（utf-8）")
+def export_records(
+    form_type: str = "",
+    keyword: str = "",
+    admin: User = Depends(get_admin_user),
+    db: Session = Depends(get_db),
+):
+    q = db.query(InterviewSession)
+    if form_type:
+        q = q.filter(InterviewSession.form_type == form_type)
+    rows = [_record_row(s, db) for s in q.order_by(InterviewSession.created_at.desc()).all()]
+    if keyword:
+        kw = keyword.lower()
+        rows = [r for r in rows if kw in r["user_name"].lower() or kw in r["user_phone"].lower()
+                or kw in r["set_name"].lower()]
+    headers = [("id", "场次ID"), ("user_name", "用户"), ("user_phone", "手机号"), ("form_label", "形式"),
+               ("set_name", "套题"), ("status", "状态"), ("total_score", "总分"),
+               ("question_count", "题数"), ("answered_count", "已作答"), ("duration", "时长"),
+               ("text_chars", "转写字数"), ("started_at", "开始时间"), ("ended_at", "结束时间")]
+    return _to_csv(rows, headers, "mockwise_records.csv")

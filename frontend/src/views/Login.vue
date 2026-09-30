@@ -56,6 +56,7 @@
         </a-form>
 
         <p class="tip">demo 账号：13800000000 / 123456（可直接登录，或注册新号自动初始化 3 次配额）</p>
+        <p class="tip admin-tip">管理后台：13800000001 / admin123（管理员角色，登录后左侧显示「管理后台」）</p>
       </div>
     </main>
 
@@ -242,6 +243,7 @@ async function doReset() {
 .link { color: var(--primary); cursor: pointer; font-size: 13px; }
 .link:hover { text-decoration: underline; }
 .tip { margin-top: 18px; color: var(--text-3); font-size: 12px; }
+.tip.admin-tip { color: var(--primary); margin-top: 6px; font-weight: 600; }
 
 @media (max-width: 820px) {
   .brand-panel { display: none; }

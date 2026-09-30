@@ -3,6 +3,7 @@ from fastapi import APIRouter, Depends, HTTPException, status
 from pydantic import BaseModel
 from sqlalchemy.orm import Session
 from app.core.database import get_db
+from app.core.logging_config import get_logger
 from app.api.deps import get_current_user
 from app.models.user import User
 from app.schemas.common import R
@@ -12,6 +13,7 @@ from app.crud import question as qc
 from app.models.session import SessionQuestion
 
 router = APIRouter(prefix="/sessions", tags=["session"])
+log = get_logger("session")
 
 
 @router.post("", response_model=R, summary="开始一场模拟")
@@ -165,7 +167,17 @@ def get_feedback(
     sq = db.get(SessionQuestion, sq_id)
     if not sq:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "题目不存在")
-    feedback = analyze_transcript(body.transcript, body.question_dimension, body.question_content)
+    # 上下文工程：按需召回本题知识片段 + 该候选人在本维度的长期记忆（任一缺失都不影响反馈）
+    mem = know = None
+    try:
+        from app.crud.memory import retrieve_relevant
+        from app.services.knowledge import get_question_knowledge
+        mem = retrieve_relevant(db, _user.id, dimension=body.question_dimension or "")
+        know = get_question_knowledge(ref_detail=sq.ref_detail, ref_answer=sq.ref_answer)
+    except Exception as e:  # noqa: BLE001 - 上下文装配失败不应中断实时反馈
+        log.warning("[session] 反馈上下文装配失败，回退纯任务上下文: %s", e)
+    feedback = analyze_transcript(body.transcript, body.question_dimension, body.question_content,
+                                  user_memory=mem, knowledge=know)
     return R.ok(feedback)
 
 
@@ -224,22 +236,34 @@ def peer_talk(
     if not sess or sess.user_id != user.id:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "场次不存在")
     from app.models.question import PeerPersona
-    from app.crud.peer import generate_peer_talk
     persona = db.get(PeerPersona, body.persona_id)
     if not persona:
         raise HTTPException(status.HTTP_404_NOT_FOUND, "人设不存在")
-    text = generate_peer_talk(
-        stage=body.stage if body.stage in ("opening", "debate", "summary") else "debate",
-        persona=persona,
-        stance=body.stance,
-        topic=body.topic,
-        target_name=body.target_name,
-        user_text=body.user_text,
-        other_name=body.other_name,
-        recent_context=body.recent_context or [],
-        respond_to=body.respond_to or "me",
+    # 本场全部候选人姓名（用于发言中的引用校验/纠偏）
+    member_names = [persona.name]
+    if sess.set_id:
+        from app.crud.peer import list_personas_for_session
+        others = list_personas_for_session(db, sess.set_id, limit=6)
+        member_names = [p.name for p in others if p.id != persona.id][:5] + [persona.name]
+    member_names = list(dict.fromkeys(member_names + ["你"]))
+    # 上下文工程：召回候选人在群面维度的长期记忆，让 AI 虚拟候选人「有针对性地」交锋
+    candidate_brief = ""
+    try:
+        from app.crud.memory import retrieve_relevant
+        candidate_brief = retrieve_relevant(db, user.id, dimension="逻辑结构", max_chars=160) or ""
+    except Exception:
+        candidate_brief = ""
+    # 后端多智能体编排生成（LLM 校验 + 失败降级模板），前端调用方式不变
+    from app.services.group_agent import generate_group_turn
+    turn = generate_group_turn(
+        persona=persona, stage=body.stage, topic=body.topic, stance=body.stance,
+        target_name=body.target_name, other_name=body.other_name,
+        user_text=body.user_text, recent_context=body.recent_context or [],
+        respond_to=body.respond_to or "me", member_names=member_names,
+        candidate_brief=candidate_brief,
     )
     return R.ok({
         "persona_id": persona.id, "name": persona.name,
-        "style": persona.style, "color": persona.color, "text": text,
+        "style": persona.style, "color": persona.color,
+        "text": turn["content"], "engine": turn.get("engine"),
     })

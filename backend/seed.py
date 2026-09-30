@@ -31,6 +31,25 @@ def seed():
             u.password_hash = hash_password("123456")
             print(f"[seed] user exists id={u.id}, password reset to 123456")
 
+        # 管理员账号（运营后台入口，role=admin；登录后左侧出现「管理后台」）
+        admin = db.query(um.User).filter_by(phone="13800000001").first()
+        if not admin:
+            admin = um.User(
+                phone="13800000001",
+                password_hash=hash_password("admin123"),
+                nickname="平台管理员",
+                target_position="运营",
+                role="admin",
+            )
+            db.add(admin)
+            db.flush()
+            db.add(um.UserQuota(user_id=admin.id, month_key=datetime.now().strftime("%Y-%m"),
+                                simulated_left=999, simulated_total=999))
+            print("[seed] created admin id=%d phone=13800000001 password=admin123" % admin.id)
+        else:
+            admin.password_hash = hash_password("admin123")
+            print("[seed] admin exists id=%d, password reset to admin123" % admin.id)
+
         # 历史得分
         if not db.query(um.PracticeHistory).filter_by(user_id=u.id).first():
             seeds = [
