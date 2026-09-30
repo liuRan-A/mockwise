@@ -30,9 +30,23 @@ Mockwise 针对以上三点设计了差异化方案，并完整跑通了从数�
 | **逐题回放** | `GET /api/v1/sessions/{id}/questions/{sq_id}` 支持跳转到任一题单独回看，关联报告、推荐改进点、维度分三项数据 |
 | **聚合视图** | MySQL 视图 `v_user_dashboard` 单查询完成工作台 KPI 聚合，避免 N+1 |
 | **认证与配额** | JWT 鉴权 + 月度配额扣减（`user_quotas`）+ 连续打卡天数统计，逻辑写在 `crud/session.finish()` 事务里 |
-| **数据规模** | 后端 Python 约 **5,000 行** / 18 张表 + 1 视图 / 12 个路由模块 / 39 个前端源文件 |
+| **数据规模** | 后端 **30 张表** + 1 视图 / **84 个接口**（含 P1-P5 审批 / 可观测性）/ 15+ 路由模块 / 39 个前端源文件（五阶段工程化后） |
 
-> **后续规划**：接入真实 LLM 面试官、ASR 转写、AI 评分；当前评分逻辑为基于关键词命中 + 字数/时长权重的 demo 算法，已在代码中预留 `crud/llm_service.py` 替换位。
+## 🛠️ 工程化体系（五阶段验收）
+
+后端已按生产级标准完成五阶段迭代，每项都配有可复跑的验证脚本：
+
+| 阶段 | 能力 | 关键实现 |
+| --- | --- | --- |
+| **P1 后端工程体系** | 接口 / 数据库 / 权限 / 日志 / 异常 / 并发 | 结构化 JSON 日志 + `trace_id` 链路、RBAC 权限点、`AdminAudit` 操作审计、全局异常捕获（不泄露内部错误）、SQLAlchemy 连接池调优 |
+| **P2 Agent 核心能力** | 任务拆解 / 失败重试 / 结果校验 / 多智能体 | `tenacity` 重试、`chat_json` 结构化校验-重试、群面 `PeerAgent` + `GroupOrchestrator` 多智能体协同（按需，不炫技） |
+| **P3 上下文工程** | 按需管理上下文 | 分层上下文（SYSTEM / TASK / USER_MEMORY / KNOWLEDGE / TOOL / HISTORY）、Token 预算构建器（实测节省 ~72.5%）、候选记忆 |
+| **P4 可观测性** | 全链路追踪 / 指标 / 量化评测 | `TraceSpan` 全链路、`LLMCallLog` 调用日志、metrics（成功率 / 耗时 / Token 成本）、离线可复跑 `eval` |
+| **P5 人机协同** | 高危操作人工卡点 | 审批状态机 `pending → approved / rejected / cancelled`（终态不可变）；AI 生成参考答案先冻结待审、复核后才落库 |
+
+> 各阶段验证方式与命令见 `backend/docs/ENGINEERING_ROADMAP.md`。
+
+> **评分引擎**：已接入真实大模型（DeepSeek）进行追问 / 评分 / 反馈，并配套上述工程化体系；同时保留规则评分作为离线评测基线。
 
 ---
 
@@ -121,7 +135,8 @@ uvicorn app.main:app --reload --port 8000
 
 后端启动后访问 `http://127.0.0.1:8000/docs` 查看 OpenAPI 文档。
 
-> **demo 账号**：`13800000000` / `123456`（也可在前端注册新号，自动初始化 3 次/月配额）。
+> **demo 账号**：`13800000000` / `123456`（考生，也可在前端注册新号，自动初始化 3 次/月配额）。
+> **管理后台账号**：`13800000001` / `admin123`（seed 写入，可登录管理后台配置题库 / 查看可观测性 / 处理审批卡点）。
 
 ### 3. 启动前端
 
@@ -220,7 +235,7 @@ MIT License —— 欢迎 fork、学习、二次开发。
 
 **刘怡然** · 智能科学与技术 · 求职意向：AI 应用开发实习
 
-- 仓库：`https://github.com/<your-name>/mockwise`
-- 联系方式：`<your-email@example.com>`
+- 仓库：`https://github.com/liuRan-A/mockwise`
+- 联系方式：`<your-email@example.com>`（替换成你的真实邮箱）
 
-> 把上面仓库地址和邮箱替换成你的真实信息再 push。
+> 当前仓库已推送至 `liuRan-A/mockwise`，可直接访问。
