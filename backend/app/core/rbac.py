@@ -22,6 +22,7 @@ log = get_logger("rbac")
 # —— 权限点（按需扩展）——
 PERM_MANAGE_USERS = "manage:users"
 PERM_MANAGE_CONTENT = "manage:content"      # 套题 / 题目 / 群面人设
+PERM_MANAGE_CMS = "manage:cms"              # 公告 / 分类标签 / 轮播广告
 PERM_MANAGE_REPORTS = "manage:reports"
 PERM_VIEW_STATS = "view:stats"
 PERM_APPROVE = "approve"                     # 人工复核/审批卡点
@@ -31,6 +32,7 @@ ROLE_PERMS: dict[str, set] = {
     "admin": {
         PERM_MANAGE_USERS,
         PERM_MANAGE_CONTENT,
+        PERM_MANAGE_CMS,
         PERM_MANAGE_REPORTS,
         PERM_VIEW_STATS,
         PERM_APPROVE,

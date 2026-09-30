@@ -4,6 +4,8 @@ import { fileURLToPath, URL } from 'node:url'
 
 export default defineConfig({
   plugins: [vue()],
+  // 把依赖预构建缓存写到本地磁盘，避免 OneDrive 同步盘上 Vite 卡死
+  cacheDir: 'C:/mockwise_vite_cache',
   resolve: {
     alias: {
       '@': fileURLToPath(new URL('./src', import.meta.url)),

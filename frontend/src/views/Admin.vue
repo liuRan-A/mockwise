@@ -57,6 +57,7 @@
           <div class="toolbar">
             <a-input-search v-model:value="userKw" placeholder="搜索昵称/手机号" style="max-width:280px;" @search="loadUsers" allow-clear />
             <a-button @click="loadUsers">刷新</a-button>
+            <a-button type="primary" @click="openUserForm()">新建用户</a-button>
             <a-button type="primary" @click="exportUsers" style="margin-left:auto">导出 CSV</a-button>
           </div>
           <a-table :data-source="users.list" :columns="userCols" row-key="id" :pagination="false" size="middle" :loading="usersLoading">
@@ -75,10 +76,14 @@
               <template v-else-if="column.key === 'op'">
                 <a-space>
                   <a-button size="small" @click="openUser(record)">详情</a-button>
+                  <a-button size="small" @click="openUserForm(record)">编辑</a-button>
                   <a-button size="small" :type="record.status === 'active' ? 'default' : 'primary'"
                     @click="toggleUser(record)">
                     {{ record.status === 'active' ? '禁用' : '启用' }}
                   </a-button>
+                  <a-popconfirm title="删除账号不可恢复，确认？" @confirm="delUser(record)">
+                    <a-button size="small" danger>删除</a-button>
+                  </a-popconfirm>
                 </a-space>
               </template>
             </template>
@@ -443,6 +448,129 @@
             </a-card>
           </a-space>
         </a-tab-pane>
+
+        <!-- 公告/通知管理 -->
+        <a-tab-pane key="ann" :tab="`公告通知（${announcements.total}）`">
+          <div class="toolbar">
+            <a-button type="primary" @click="openAnnForm()">新建公告</a-button>
+            <a-button @click="loadAnnouncements">刷新</a-button>
+            <a-select v-model:value="annLevel" style="width:120px" @change="loadAnnouncements">
+              <a-select-option value="">全部等级</a-select-option>
+              <a-select-option value="info">普通</a-select-option>
+              <a-select-option value="warning">警告</a-select-option>
+              <a-select-option value="important">重要</a-select-option>
+            </a-select>
+            <span class="muted" style="margin-left:auto">仅管理员可见，已发布且在有效期内的公告会触达用户端</span>
+          </div>
+          <a-table :data-source="announcements.list" :columns="annCols" row-key="id" :pagination="false" size="middle" :loading="annLoading">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'level'">
+                <a-tag :color="{ info: 'default', warning: 'orange', important: 'red' }[record.level]">
+                  {{ { info: '普通', warning: '警告', important: '重要' }[record.level] }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'audience'">
+                <a-tag :color="record.audience === 'all' ? 'blue' : 'cyan'">
+                  {{ { all: '全部用户', vip: 'VIP', new: '新用户', beta: '内测' }[record.audience] }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'pinned'">
+                <a-tag :color="record.is_pinned ? 'gold' : 'default'">{{ record.is_pinned ? '置顶' : '—' }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'published'">
+                <a-tag :color="record.is_published ? 'green' : 'default'">{{ record.is_published ? '已发布' : '草稿' }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'range'">
+                {{ record.start_at || '即日' }} ~ {{ record.end_at || '长期' }}
+              </template>
+              <template v-else-if="column.key === 'op'">
+                <a-space>
+                  <a-button size="small" @click="openAnnForm(record)">编辑</a-button>
+                  <a-popconfirm title="确认删除该公告？" @confirm="delAnn(record)">
+                    <a-button size="small" danger>删除</a-button>
+                  </a-popconfirm>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
+          <div class="pager">
+            <a-button size="small" :disabled="announcements.page <= 1" @click="announcements.page--; loadAnnouncements()">上一页</a-button>
+            <span>第 {{ announcements.page }} 页</span>
+            <a-button size="small" :disabled="announcements.page * announcements.page_size >= announcements.total" @click="announcements.page++; loadAnnouncements()">下一页</a-button>
+          </div>
+        </a-tab-pane>
+
+        <!-- 分类/标签管理 -->
+        <a-tab-pane key="cat" :tab="`分类标签（${categories.list.length}）`">
+          <div class="toolbar">
+            <a-button type="primary" @click="openCatForm()">新建分类</a-button>
+            <a-button @click="loadCategories">刷新</a-button>
+            <a-select v-model:value="catKind" style="width:130px" @change="loadCategories">
+              <a-select-option value="">全部分类</a-select-option>
+              <a-select-option value="club">社团类型</a-select-option>
+              <a-select-option value="product">商品类别</a-select-option>
+              <a-select-option value="position">岗位</a-select-option>
+              <a-select-option value="tag">自定义标签</a-select-option>
+            </a-select>
+            <span class="muted" style="margin-left:auto">用于用户筛选与系统统计的分类体系</span>
+          </div>
+          <a-table :data-source="categories.list" :columns="catCols" row-key="id" :pagination="false" size="middle" :loading="catLoading">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'kind'">
+                <a-tag :color="{ club: 'purple', product: 'green', position: 'blue', tag: 'default' }[record.kind]">
+                  {{ { club: '社团类型', product: '商品类别', position: '岗位', tag: '标签' }[record.kind] }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'op'">
+                <a-space>
+                  <a-button size="small" @click="openCatForm(record)">编辑</a-button>
+                  <a-popconfirm title="确认删除该分类？" @confirm="delCat(record)">
+                    <a-button size="small" danger>删除</a-button>
+                  </a-popconfirm>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
+        </a-tab-pane>
+
+        <!-- 轮播图/广告位管理 -->
+        <a-tab-pane key="car" :tab="`轮播广告（${carousels.total}）`">
+          <div class="toolbar">
+            <a-button type="primary" @click="openCarForm()">新建轮播</a-button>
+            <a-button @click="loadCarousels">刷新</a-button>
+            <a-select v-model:value="carPos" style="width:130px" @change="loadCarousels">
+              <a-select-option value="">全部位置</a-select-option>
+              <a-select-option value="home">首页</a-select-option>
+              <a-select-option value="banner">横幅</a-select-option>
+              <a-select-option value="popup">弹窗</a-select-option>
+            </a-select>
+            <span class="muted" style="margin-left:auto">首页与关键位置的展示位，用于运营活动与信息推广</span>
+          </div>
+          <a-table :data-source="carousels.list" :columns="carCols" row-key="id" :pagination="false" size="middle" :loading="carLoading">
+            <template #bodyCell="{ column, record }">
+              <template v-if="column.key === 'thumb'">
+                <img v-if="record.image_url" :src="record.image_url" class="car-thumb" />
+                <span v-else class="muted">无图</span>
+              </template>
+              <template v-else-if="column.key === 'position'">
+                <a-tag :color="{ home: 'blue', banner: 'cyan', popup: 'purple' }[record.position]">
+                  {{ { home: '首页', banner: '横幅', popup: '弹窗' }[record.position] }}
+                </a-tag>
+              </template>
+              <template v-else-if="column.key === 'active'">
+                <a-tag :color="record.is_active ? 'green' : 'default'">{{ record.is_active ? '启用' : '停用' }}</a-tag>
+              </template>
+              <template v-else-if="column.key === 'op'">
+                <a-space>
+                  <a-button size="small" @click="openCarForm(record)">编辑</a-button>
+                  <a-popconfirm title="确认删除该轮播？" @confirm="delCar(record)">
+                    <a-button size="small" danger>删除</a-button>
+                  </a-popconfirm>
+                </a-space>
+              </template>
+            </template>
+          </a-table>
+        </a-tab-pane>
       </a-tabs>
     </div>
 
@@ -648,6 +776,97 @@
         </a-form-item>
       </a-form>
     </a-modal>
+
+    <!-- 用户新建/编辑 -->
+    <a-modal v-model:open="userModal" :title="userForm.id ? '编辑用户' : '新建用户'" width="520"
+      :confirm-loading="savingUser" @ok="saveUser">
+      <a-form layout="vertical">
+        <a-row :gutter="12">
+          <a-col :span="14"><a-form-item label="手机号">
+            <a-input v-model:value="userForm.phone" :disabled="!!userForm.id" placeholder="11 位手机号" />
+          </a-form-item></a-col>
+          <a-col :span="10"><a-form-item label="角色">
+            <a-select v-model:value="userForm.role" :options="roleOptions" />
+          </a-form-item></a-col>
+        </a-row>
+        <a-form-item :label="userForm.id ? '重置密码（留空不改）' : '初始密码'">
+          <a-input-password v-model:value="userForm.password" placeholder="至少 6 位" />
+        </a-form-item>
+        <a-row :gutter="12">
+          <a-col :span="12"><a-form-item label="昵称"><a-input v-model:value="userForm.nickname" placeholder="如：张三" /></a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="目标岗位"><a-input v-model:value="userForm.target_position" placeholder="如：产品经理" /></a-form-item></a-col>
+        </a-row>
+      </a-form>
+    </a-modal>
+
+    <!-- 公告新建/编辑 -->
+    <a-modal v-model:open="annModal" :title="annForm.id ? '编辑公告' : '新建公告'" width="620"
+      :confirm-loading="savingAnn" @ok="saveAnn">
+      <a-form layout="vertical">
+        <a-form-item label="标题"><a-input v-model:value="annForm.title" placeholder="公告标题" /></a-form-item>
+        <a-form-item label="正文"><a-textarea v-model:value="annForm.content" :rows="4" placeholder="公告内容" /></a-form-item>
+        <a-row :gutter="12">
+          <a-col :span="8"><a-form-item label="等级">
+            <a-select v-model:value="annForm.level" :options="annLevelOptions" />
+          </a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="受众">
+            <a-select v-model:value="annForm.audience" :options="annAudienceOptions" />
+          </a-form-item></a-col>
+          <a-col :span="8"><a-form-item label="有效期">
+            <a-range-picker v-model:value="annRange" show-time style="width:100%" />
+          </a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="12">
+          <a-col :span="12"><a-form-item label="置顶">
+            <a-switch v-model:checked="annForm.is_pinned" checked-children="置顶" un-checked-children="普通" />
+          </a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="发布状态">
+            <a-switch v-model:checked="annForm.is_published" checked-children="已发布" un-checked-children="草稿" />
+          </a-form-item></a-col>
+        </a-row>
+      </a-form>
+    </a-modal>
+
+    <!-- 分类新建/编辑 -->
+    <a-modal v-model:open="catModal" :title="catForm.id ? '编辑分类' : '新建分类'" width="520"
+      :confirm-loading="savingCat" @ok="saveCat">
+      <a-form layout="vertical">
+        <a-row :gutter="12">
+          <a-col :span="12"><a-form-item label="名称"><a-input v-model:value="catForm.name" placeholder="如：产品" /></a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="类型">
+            <a-select v-model:value="catForm.kind" :options="catKindOptions" />
+          </a-form-item></a-col>
+        </a-row>
+        <a-form-item label="描述"><a-textarea v-model:value="catForm.description" :rows="2" /></a-form-item>
+        <a-form-item label="排序"><a-input-number v-model:value="catForm.sort_order" :min="0" style="width:160px" /></a-form-item>
+      </a-form>
+    </a-modal>
+
+    <!-- 轮播新建/编辑 -->
+    <a-modal v-model:open="carModal" :title="carForm.id ? '编辑轮播' : '新建轮播'" width="620"
+      :confirm-loading="savingCar" @ok="saveCar">
+      <a-form layout="vertical">
+        <a-form-item label="标题"><a-input v-model:value="carForm.title" placeholder="如：秋招活动" /></a-form-item>
+        <a-row :gutter="12">
+          <a-col :span="12"><a-form-item label="图片链接（URL）"><a-input v-model:value="carForm.image_url" placeholder="https://..." /></a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="跳转链接（URL）"><a-input v-model:value="carForm.link_url" placeholder="点击后跳转，可为空" /></a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="12">
+          <a-col :span="12"><a-form-item label="展示位置">
+            <a-select v-model:value="carForm.position" :options="carPosOptions" />
+          </a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="有效期">
+            <a-range-picker v-model:value="carRange" show-time style="width:100%" />
+          </a-form-item></a-col>
+        </a-row>
+        <a-row :gutter="12">
+          <a-col :span="12"><a-form-item label="是否启用">
+            <a-switch v-model:checked="carForm.is_active" checked-children="启用" un-checked-children="停用" />
+          </a-form-item></a-col>
+          <a-col :span="12"><a-form-item label="排序"><a-input-number v-model:value="carForm.sort_order" :min="0" style="width:160px" /></a-form-item></a-col>
+        </a-row>
+      </a-form>
+    </a-modal>
   </div>
 </template>
 
@@ -655,8 +874,9 @@
 import { ref, computed, onMounted, reactive } from 'vue'
 import { message } from 'ant-design-vue'
 import { useRouter } from 'vue-router'
-import { adminApi, contentApi, observabilityApi, approvalApi } from '@/api'
+import { adminApi, contentApi, observabilityApi, approvalApi, cmsApi, userApi } from '@/api'
 import ReplayModal from '@/components/ReplayModal.vue'
+import dayjs from 'dayjs'
 
 const router = useRouter()
 const stats = ref(null)
@@ -1305,6 +1525,217 @@ async function loadEvalLatest() {
   }
 }
 
+// ============ 用户管理：新建 / 编辑 / 删除 ============
+const userModal = ref(false)
+const savingUser = ref(false)
+const userForm = reactive({ id: null, phone: '', password: '', nickname: '', target_position: '', role: 'user' })
+const roleOptions = [
+  { label: '普通用户', value: 'user' },
+  { label: '管理员', value: 'admin' },
+]
+function openUserForm(row) {
+  const d = { id: null, phone: '', password: '', nickname: '', target_position: '', role: 'user' }
+  if (row) Object.assign(d, row)
+  Object.assign(userForm, d)
+  userModal.value = true
+}
+async function saveUser() {
+  if (!/^\d{6,20}$/.test(userForm.phone || '')) { message.warning('请填写有效手机号'); return }
+  if (!userForm.id && !userForm.password) { message.warning('请设置初始密码'); return }
+  if (userForm.password && userForm.password.length < 6) { message.warning('密码至少 6 位'); return }
+  savingUser.value = true
+  try {
+    const payload = {
+      phone: userForm.phone,
+      nickname: userForm.nickname,
+      target_position: userForm.target_position,
+      role: userForm.role,
+    }
+    if (userForm.password) payload.password = userForm.password
+    if (userForm.id) {
+      await userApi.update(userForm.id, payload)
+      message.success('已更新用户')
+    } else {
+      await userApi.create(payload)
+      message.success('已创建用户')
+    }
+    userModal.value = false
+    await loadUsers()
+  } catch (e) { message.error(e?.response?.data?.msg || '保存失败') }
+  finally { savingUser.value = false }
+}
+async function delUser(row) {
+  try { await userApi.remove(row.id); message.success('已删除用户'); loadUsers() }
+  catch (e) { message.error(e?.response?.data?.msg || '删除失败') }
+}
+
+// ============ 公告管理 ============
+const announcements = ref({ list: [], total: 0, page: 1, page_size: 10 })
+const annLoading = ref(false)
+const annLevel = ref('')
+const annModal = ref(false)
+const savingAnn = ref(false)
+const annRange = ref(null)
+const annForm = reactive({ id: null, title: '', content: '', level: 'info', audience: 'all', is_pinned: false, is_published: true })
+const annLevelOptions = [
+  { label: '普通', value: 'info' }, { label: '警告', value: 'warning' }, { label: '重要', value: 'important' },
+]
+const annAudienceOptions = [
+  { label: '全部用户', value: 'all' }, { label: 'VIP', value: 'vip' },
+  { label: '新用户', value: 'new' }, { label: '内测', value: 'beta' },
+]
+const annCols = [
+  { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true },
+  { title: '等级', key: 'level', width: 80 },
+  { title: '受众', key: 'audience', width: 90 },
+  { title: '置顶', key: 'pinned', width: 70 },
+  { title: '状态', key: 'published', width: 80 },
+  { title: '有效期', key: 'range' },
+  { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160 },
+  { title: '操作', key: 'op', width: 120 },
+]
+async function loadAnnouncements() {
+  annLoading.value = true
+  try {
+    const r = await cmsApi.announcements({ level: annLevel.value || undefined, page: announcements.value.page, page_size: 10 })
+    announcements.value.list = r.list; announcements.value.total = r.total
+  } finally { annLoading.value = false }
+}
+function openAnnForm(row) {
+  const d = { id: null, title: '', content: '', level: 'info', audience: 'all', is_pinned: false, is_published: true }
+  if (row) Object.assign(d, row)
+  Object.assign(annForm, d)
+  annRange.value = (row && row.start_at && row.end_at) ? [dayjs(row.start_at), dayjs(row.end_at)] : null
+  annModal.value = true
+}
+async function saveAnn() {
+  if (!annForm.title || !annForm.title.trim()) { message.warning('请填写标题'); return }
+  savingAnn.value = true
+  try {
+    const payload = {
+      title: annForm.title, content: annForm.content, level: annForm.level,
+      audience: annForm.audience, is_pinned: annForm.is_pinned, is_published: annForm.is_published,
+    }
+    if (annRange.value && annRange.value[0]) payload.start_at = annRange.value[0].format('YYYY-MM-DD HH:mm:ss')
+    if (annRange.value && annRange.value[1]) payload.end_at = annRange.value[1].format('YYYY-MM-DD HH:mm:ss')
+    if (annForm.id) await cmsApi.updateAnnouncement(annForm.id, payload)
+    else await cmsApi.createAnnouncement(payload)
+    message.success('已保存')
+    annModal.value = false
+    await loadAnnouncements()
+  } catch (e) { message.error(e?.response?.data?.msg || '保存失败') }
+  finally { savingAnn.value = false }
+}
+async function delAnn(row) {
+  try { await cmsApi.deleteAnnouncement(row.id); message.success('已删除'); loadAnnouncements() }
+  catch (e) { message.error(e?.response?.data?.msg || '删除失败') }
+}
+
+// ============ 分类标签管理 ============
+const categories = ref({ list: [] })
+const catLoading = ref(false)
+const catKind = ref('')
+const catModal = ref(false)
+const savingCat = ref(false)
+const catForm = reactive({ id: null, name: '', kind: 'tag', description: '', sort_order: 0 })
+const catKindOptions = [
+  { label: '社团类型', value: 'club' }, { label: '商品类别', value: 'product' },
+  { label: '岗位', value: 'position' }, { label: '自定义标签', value: 'tag' },
+]
+const catCols = [
+  { title: '名称', dataIndex: 'name', key: 'name' },
+  { title: '类型', key: 'kind', width: 100 },
+  { title: '描述', dataIndex: 'description', key: 'description', ellipsis: true },
+  { title: '排序', dataIndex: 'sort_order', key: 'sort_order', width: 70 },
+  { title: '创建时间', dataIndex: 'created_at', key: 'created_at', width: 160 },
+  { title: '操作', key: 'op', width: 120 },
+]
+async function loadCategories() {
+  catLoading.value = true
+  try { categories.value.list = await cmsApi.categories(catKind.value || undefined) }
+  finally { catLoading.value = false }
+}
+function openCatForm(row) {
+  const d = { id: null, name: '', kind: 'tag', description: '', sort_order: 0 }
+  if (row) Object.assign(d, row)
+  Object.assign(catForm, d)
+  catModal.value = true
+}
+async function saveCat() {
+  if (!catForm.name || !catForm.name.trim()) { message.warning('请填写名称'); return }
+  savingCat.value = true
+  try {
+    const payload = { name: catForm.name, kind: catForm.kind, description: catForm.description, sort_order: catForm.sort_order }
+    if (catForm.id) await cmsApi.updateCategory(catForm.id, payload)
+    else await cmsApi.createCategory(payload)
+    message.success('已保存')
+    catModal.value = false
+    await loadCategories()
+  } catch (e) { message.error(e?.response?.data?.msg || '保存失败') }
+  finally { savingCat.value = false }
+}
+async function delCat(row) {
+  try { await cmsApi.deleteCategory(row.id); message.success('已删除'); loadCategories() }
+  catch (e) { message.error(e?.response?.data?.msg || '删除失败') }
+}
+
+// ============ 轮播广告管理 ============
+const carousels = ref({ list: [], total: 0 })
+const carLoading = ref(false)
+const carPos = ref('')
+const carModal = ref(false)
+const savingCar = ref(false)
+const carRange = ref(null)
+const carForm = reactive({ id: null, title: '', image_url: '', link_url: '', position: 'home', is_active: true, sort_order: 0 })
+const carPosOptions = [
+  { label: '首页', value: 'home' }, { label: '横幅', value: 'banner' }, { label: '弹窗', value: 'popup' },
+]
+const carCols = [
+  { title: '预览', key: 'thumb', width: 90 },
+  { title: '标题', dataIndex: 'title', key: 'title', ellipsis: true },
+  { title: '位置', key: 'position', width: 90 },
+  { title: '跳转', dataIndex: 'link_url', key: 'link_url', ellipsis: true, customRender: ({ text }) => text || '—' },
+  { title: '状态', key: 'active', width: 80 },
+  { title: '排序', dataIndex: 'sort_order', key: 'sort_order', width: 70 },
+  { title: '操作', key: 'op', width: 120 },
+]
+async function loadCarousels() {
+  carLoading.value = true
+  try {
+    const r = await cmsApi.carousels({ position: carPos.value || undefined })
+    carousels.value.list = r.list; carousels.value.total = r.total
+  } finally { carLoading.value = false }
+}
+function openCarForm(row) {
+  const d = { id: null, title: '', image_url: '', link_url: '', position: 'home', is_active: true, sort_order: 0 }
+  if (row) Object.assign(d, row)
+  Object.assign(carForm, d)
+  carRange.value = (row && row.start_at && row.end_at) ? [dayjs(row.start_at), dayjs(row.end_at)] : null
+  carModal.value = true
+}
+async function saveCar() {
+  if (!carForm.title || !carForm.title.trim()) { message.warning('请填写标题'); return }
+  savingCar.value = true
+  try {
+    const payload = {
+      title: carForm.title, image_url: carForm.image_url, link_url: carForm.link_url,
+      position: carForm.position, is_active: carForm.is_active, sort_order: carForm.sort_order,
+    }
+    if (carRange.value && carRange.value[0]) payload.start_at = carRange.value[0].format('YYYY-MM-DD HH:mm:ss')
+    if (carRange.value && carRange.value[1]) payload.end_at = carRange.value[1].format('YYYY-MM-DD HH:mm:ss')
+    if (carForm.id) await cmsApi.updateCarousel(carForm.id, payload)
+    else await cmsApi.createCarousel(payload)
+    message.success('已保存')
+    carModal.value = false
+    await loadCarousels()
+  } catch (e) { message.error(e?.response?.data?.msg || '保存失败') }
+  finally { savingCar.value = false }
+}
+async function delCar(row) {
+  try { await cmsApi.deleteCarousel(row.id); message.success('已删除'); loadCarousels() }
+  catch (e) { message.error(e?.response?.data?.msg || '删除失败') }
+}
+
 onMounted(() => {
   loadStats()
   loadUsers()
@@ -1316,6 +1747,9 @@ onMounted(() => {
   loadObs()
   loadEvalLatest()
   loadApprovals()
+  loadAnnouncements()
+  loadCategories()
+  loadCarousels()
 })
 </script>
 
@@ -1363,6 +1797,7 @@ onMounted(() => {
   overflow: hidden; text-overflow: ellipsis; vertical-align: bottom;
 }
 .persona-dot { display: inline-block; width: 10px; height: 10px; border-radius: 50%; margin-right: 6px; vertical-align: middle; }
+.car-thumb { width: 64px; height: 36px; object-fit: cover; border-radius: 4px; border: 1px solid var(--border-soft); background: var(--bg); }
 .json-box {
   background: var(--bg); border: 1px solid var(--border-soft); border-radius: 8px;
   padding: 12px; font-size: 12px; line-height: 1.5; max-height: 320px; overflow: auto;

@@ -18,6 +18,7 @@ from app.models.audit import AdminAudit  # noqa: F401  注册审计表
 from app.models.memory import CandidateMemory  # noqa: F401  注册候选人长期记忆表
 from app.models.observability import LLMCallLog, TraceSpan, EvalRun, EvalSample  # noqa: F401  可观测性表
 from app.models.approval import ContentApproval  # noqa: F401  人工审批卡点表
+from app.models.cms import Announcement, Category, Carousel  # noqa: F401  CMS 运营内容表
 
 # 工程化日志（JSON + 请求上下文），替换原来的 basicConfig
 configure_logging(level=logging.INFO if settings.DEBUG else logging.INFO)

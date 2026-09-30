@@ -1,7 +1,8 @@
 """所有 v1 路由聚合"""
 from fastapi import APIRouter
 from app.api.v1 import (auth, dashboard, question_sets, sessions, reports, group,
-                        resumes, admin, practice, content, observability, approval)
+                        resumes, admin, practice, content, observability, approval,
+                        cms, users)
 
 api_router = APIRouter()
 api_router.include_router(auth.router)
@@ -16,3 +17,6 @@ api_router.include_router(practice.router)
 api_router.include_router(content.router)
 api_router.include_router(observability.router)
 api_router.include_router(approval.router)
+api_router.include_router(cms.admin)
+api_router.include_router(cms.public)
+api_router.include_router(users.router)

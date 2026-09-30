@@ -4,6 +4,7 @@ from datetime import datetime, timedelta
 from app.core.database import SessionLocal, engine, Base
 from app.models import (user as um, position as pm, question as qm, session as sm,
                         group as gm, report as rm, audit, memory, approval, observability)  # noqa
+from app.models.cms import Announcement, Category, Carousel  # noqa
 from app.core.security import hash_password
 
 
@@ -466,6 +467,47 @@ def seed():
                     set_id=None,
                 ))
             print(f"[seed] created {len(personas)} peer personas")
+
+        # —— CMS 运营内容：分类 / 轮播 / 公告 ——
+        if not db.query(Category).first():
+            cats = [
+                dict(name="产品", kind="position", description="面试岗位大类", sort_order=1),
+                dict(name="研发", kind="position", description="技术类岗位", sort_order=2),
+                dict(name="运营", kind="position", description="运营增长类岗位", sort_order=3),
+                dict(name="社团-技术协会", kind="club", description="校园技术类社团", sort_order=1),
+                dict(name="社团-商科协会", kind="club", description="校园商科类社团", sort_order=2),
+                dict(name="互联网大厂", kind="tag", description="目标公司标签", sort_order=1),
+                dict(name="国企央企", kind="tag", description="目标公司标签", sort_order=2),
+            ]
+            for c in cats:
+                db.add(Category(**c))
+            print(f"[seed] created {len(cats)} categories")
+
+        if not db.query(Carousel).first():
+            carousels = [
+                dict(title="秋招冲刺季 · AI 模拟面试限时 0 元", image_url="",
+                     link_url="/dashboard", position="home", is_active=True, sort_order=1),
+                dict(title="群面无领导讨论专项上线", image_url="",
+                     link_url="/dashboard", position="home", is_active=True, sort_order=2),
+                dict(title="简历智能诊断 · 上传即出报告", image_url="",
+                     link_url="/resume", position="home", is_active=True, sort_order=3),
+            ]
+            for c in carousels:
+                db.add(Carousel(**c))
+            print(f"[seed] created {len(carousels)} carousels")
+
+        if not db.query(Announcement).first():
+            anns = [
+                dict(title="系统升级通知", content="Mockwise 已完成工程化升级，新增内容管理后台：公告、分类、轮播均可运营配置。",
+                     level="info", audience="all", is_pinned=True, is_published=True),
+                dict(title="秋招模拟面试活动", content="即日起至秋招结束，每日前 100 名用户可免费体验 1 次 AI 模拟面试。",
+                     level="important", audience="all", is_pinned=False, is_published=True),
+                dict(title="新用户专享", content="新注册用户赠送 3 次模拟面试配额，记得在「我的」中查看。",
+                     level="warning", audience="new", is_pinned=False, is_published=True),
+            ]
+            for a in anns:
+                db.add(Announcement(**a))
+            print(f"[seed] created {len(anns)} announcements")
 
         db.commit()
         print("[seed] done")

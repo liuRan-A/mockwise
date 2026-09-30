@@ -75,3 +75,29 @@ export const observabilityApi = {
   latestEval: () => http.get('/admin/observability/eval/latest'),
   evalRuns: (limit) => http.get('/admin/observability/eval/runs', { params: { limit } }),
 }
+
+// —— CMS 运营内容管理：公告 / 分类标签 / 轮播广告（管理员）——
+export const cmsApi = {
+  // 公告
+  announcements: (params) => http.get('/admin/cms/announcements', { params }),
+  createAnnouncement: (data) => http.post('/admin/cms/announcements', data),
+  updateAnnouncement: (id, data) => http.put(`/admin/cms/announcements/${id}`, data),
+  deleteAnnouncement: (id) => http.delete(`/admin/cms/announcements/${id}`),
+  // 分类标签
+  categories: (kind) => http.get('/admin/cms/categories', { params: { kind } }),
+  createCategory: (data) => http.post('/admin/cms/categories', data),
+  updateCategory: (id, data) => http.put(`/admin/cms/categories/${id}`, data),
+  deleteCategory: (id) => http.delete(`/admin/cms/categories/${id}`),
+  // 轮播广告
+  carousels: (params) => http.get('/admin/cms/carousels', { params }),
+  createCarousel: (data) => http.post('/admin/cms/carousels', data),
+  updateCarousel: (id, data) => http.put(`/admin/cms/carousels/${id}`, data),
+  deleteCarousel: (id) => http.delete(`/admin/cms/carousels/${id}`),
+}
+
+// —— 用户管理：创建 / 编辑 / 删除（管理员）——
+export const userApi = {
+  create: (data) => http.post('/admin/users', data),
+  update: (id, data) => http.put(`/admin/users/${id}`, data),
+  remove: (id) => http.delete(`/admin/users/${id}`),
+}
