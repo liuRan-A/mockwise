@@ -373,11 +373,24 @@ function stanceOf(idx) {
 // —— 阶段推进 ——
 async function startOpening() {
   waitingPeer.value = true
-  sys('讨论开始，进入「个人陈述」环节，每位候选人依次发言。')
-  const order = [...peers.value]
-  for (let i = 0; i < Math.min(2, order.length); i++) {
-    await peerTalk(order[i], 'opening')
-    await new Promise(r => setTimeout(r, 400))
+  sys('讨论开始，进入「个人陈述」环节，候选人依次发言。')
+  try {
+    // 后端接管「一轮陈述」：候选人之间也会互相呼应，而非各自平铺
+    const res = await sessionApi.groupRound(props.sessionId, {
+      stage: 'opening', topic: topic.value, user_text: '', recent_context: buildContext(4),
+    })
+    const turns = (res && res.turns) || []
+    for (const t of turns) {
+      await playPeerTurn(t)
+      await new Promise(r => setTimeout(r, 400))
+    }
+  } catch (e) {
+    // 异常降级：按抢话倾向降序平铺两位候选人
+    const order = [...peers.value].sort((a, b) => b.aggressiveness - a.aggressiveness)
+    for (let i = 0; i < Math.min(2, order.length); i++) {
+      await peerTalk(order[i], 'opening')
+      await new Promise(r => setTimeout(r, 400))
+    }
   }
   waitingPeer.value = false
   sys('轮到你作个人陈述了：点击「举手发言」亮明你的立场和理由。')
@@ -449,10 +462,22 @@ async function toSummary() {
 async function runSummary() {
   waitingPeer.value = true
   sys('进入「总结陈词」环节，候选人依次总结。')
-  const order = [...peers.value].sort((a, b) => a.aggressiveness - b.aggressiveness)
-  for (const p of order.slice(0, 2)) {
-    await peerTalk(p, 'summary')
-    await new Promise(r => setTimeout(r, 300))
+  try {
+    // 后端接管「一轮总结」：候选人互相收束、互相引用，而非各说各话
+    const res = await sessionApi.groupRound(props.sessionId, {
+      stage: 'summary', topic: topic.value, user_text: '', recent_context: buildContext(4),
+    })
+    const turns = (res && res.turns) || []
+    for (const t of turns) {
+      await playPeerTurn(t)
+      await new Promise(r => setTimeout(r, 300))
+    }
+  } catch (e) {
+    const order = [...peers.value].sort((a, b) => a.aggressiveness - b.aggressiveness)
+    for (const p of order.slice(0, 2)) {
+      await peerTalk(p, 'summary')
+      await new Promise(r => setTimeout(r, 300))
+    }
   }
   waitingPeer.value = false
   sys('轮到你了：请给出你的总结陈词，然后点击「提交讨论」。')
